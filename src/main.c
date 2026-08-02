@@ -3,7 +3,7 @@
 
 #include "routine.h"
 
-#include <mountmgr.h>
+#include <winioctl.h>
 
 #include "main.h"
 #include "rapp.h"
@@ -32,10 +32,65 @@
 #define _r_config_setulong _r_config_setulong_ex
 #endif // APP_ROUTINE_LEGACY_API
 
+// Minimal Mount Manager declarations used by this application. The full
+// mountmgr.h header is distributed with the WDK and is not part of the SDK.
+#define APP_MOUNTMGR_DEVICE_NAME L"\\Device\\MountPointManager"
+#define APP_MOUNTMGR_CONTROL_TYPE 0x0000006D
+#define APP_IOCTL_MOUNTMGR_QUERY_POINTS CTL_CODE (APP_MOUNTMGR_CONTROL_TYPE, 2, METHOD_BUFFERED, FILE_ANY_ACCESS)
+
+typedef struct _APP_MOUNTMGR_MOUNT_POINT
+{
+	ULONG SymbolicLinkNameOffset;
+	USHORT SymbolicLinkNameLength;
+	USHORT Reserved1;
+	ULONG UniqueIdOffset;
+	USHORT UniqueIdLength;
+	USHORT Reserved2;
+	ULONG DeviceNameOffset;
+	USHORT DeviceNameLength;
+	USHORT Reserved3;
+} APP_MOUNTMGR_MOUNT_POINT, *PAPP_MOUNTMGR_MOUNT_POINT;
+
+typedef struct _APP_MOUNTMGR_MOUNT_POINTS
+{
+	ULONG Size;
+	ULONG NumberOfMountPoints;
+	APP_MOUNTMGR_MOUNT_POINT MountPoints[1];
+} APP_MOUNTMGR_MOUNT_POINTS, *PAPP_MOUNTMGR_MOUNT_POINTS;
+
 STATIC_DATA config = {0};
 
 ULONG limits_arr[13] = {0};
 ULONG intervals_arr[13] = {0};
+
+FORCEINLINE BOOLEAN _app_ismountmgrvolumename (
+	_In_ PUNICODE_STRING string
+)
+{
+	if (
+		(string->Length == 96 || (string->Length == 98 && string->Buffer[48] == L'\\')) &&
+		string->Buffer[0] == L'\\' &&
+		(string->Buffer[1] == L'?' || string->Buffer[1] == L'\\') &&
+		string->Buffer[2] == L'?' &&
+		string->Buffer[3] == L'\\' &&
+		string->Buffer[4] == L'V' &&
+		string->Buffer[5] == L'o' &&
+		string->Buffer[6] == L'l' &&
+		string->Buffer[7] == L'u' &&
+		string->Buffer[8] == L'm' &&
+		string->Buffer[9] == L'e' &&
+		string->Buffer[10] == L'{' &&
+		string->Buffer[19] == L'-' &&
+		string->Buffer[24] == L'-' &&
+		string->Buffer[29] == L'-' &&
+		string->Buffer[34] == L'-' &&
+		string->Buffer[47] == L'}')
+	{
+		return TRUE;
+	}
+
+	return FALSE;
+}
 
 // Bridge API shape differences between the public routine SDK and newer snapshots.
 FORCEINLINE BOOLEAN _app_obj_enumhashtable (
@@ -302,18 +357,18 @@ FORCEINLINE LPCWSTR _app_getcleanupreason (
 }
 
 NTSTATUS _app_getvolumemountpoints (
-	_Out_ PMOUNTMGR_MOUNT_POINTS *out_buffer,
+	_Out_ PAPP_MOUNTMGR_MOUNT_POINTS *out_buffer,
 	_In_ HANDLE hdevice
 )
 {
-	MOUNTMGR_MOUNT_POINT query = {0};
-	PMOUNTMGR_MOUNT_POINTS mountpoints;
+	APP_MOUNTMGR_MOUNT_POINT query = {0};
+	PAPP_MOUNTMGR_MOUNT_POINTS mountpoints;
 	ULONG_PTR return_length;
 	ULONG buffer_length;
 	ULONG next_length;
 	NTSTATUS status;
 
-	buffer_length = sizeof (MOUNTMGR_MOUNT_POINTS) + 0x1000;
+	buffer_length = sizeof (APP_MOUNTMGR_MOUNT_POINTS) + 0x1000;
 	mountpoints = _r_mem_allocate (buffer_length);
 
 	while (TRUE)
@@ -323,9 +378,9 @@ NTSTATUS _app_getvolumemountpoints (
 
 		status = _r_fs_deviceiocontrol (
 			hdevice,
-			IOCTL_MOUNTMGR_QUERY_POINTS,
+			APP_IOCTL_MOUNTMGR_QUERY_POINTS,
 			&query,
-			sizeof (MOUNTMGR_MOUNT_POINT),
+			sizeof (APP_MOUNTMGR_MOUNT_POINT),
 			mountpoints,
 			buffer_length,
 			&return_length
@@ -368,15 +423,15 @@ NTSTATUS _app_getvolumemountpoints (
 
 NTSTATUS _app_flushvolumecache ()
 {
-	PMOUNTMGR_MOUNT_POINTS object_mountpoints;
-	PMOUNTMGR_MOUNT_POINT mountpoint;
+	PAPP_MOUNTMGR_MOUNT_POINTS object_mountpoints;
+	PAPP_MOUNTMGR_MOUNT_POINT mountpoint;
 	OBJECT_ATTRIBUTES oa = {0};
 	IO_STATUS_BLOCK isb;
 	UNICODE_STRING us;
 	HANDLE hdevice, hvolume;
 	NTSTATUS status;
 
-	RtlInitUnicodeString (&us, MOUNTMGR_DEVICE_NAME);
+	RtlInitUnicodeString (&us, APP_MOUNTMGR_DEVICE_NAME);
 
 	InitializeObjectAttributes (&oa, &us, OBJ_CASE_INSENSITIVE, NULL, NULL);
 
@@ -410,7 +465,7 @@ NTSTATUS _app_flushvolumecache ()
 		us.MaximumLength = mountpoint->SymbolicLinkNameLength + sizeof (UNICODE_NULL);
 		us.Buffer = PTR_ADD_OFFSET (object_mountpoints, mountpoint->SymbolicLinkNameOffset);
 
-		if (MOUNTMGR_IS_VOLUME_NAME (&us)) // \\??\\Volume{1111-2222}
+		if (_app_ismountmgrvolumename (&us)) // \\??\\Volume{1111-2222}
 		{
 			InitializeObjectAttributes (&oa, &us, OBJ_CASE_INSENSITIVE, NULL, NULL);
 
