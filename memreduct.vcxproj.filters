@@ -1,5 +1,8 @@
 ﻿<?xml version="1.0" encoding="utf-8"?>
 <Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <PropertyGroup>
+    <RoutineDir Condition="'$(RoutineDir)'==''">$(MSBuildThisFileDirectory)..\routine\src</RoutineDir>
+  </PropertyGroup>
   <ItemGroup>
     <Filter Include="Header Files">
       <UniqueIdentifier>{B43C75CA-B7CD-42CD-AECE-B5C726B07DCB}</UniqueIdentifier>
@@ -18,10 +21,10 @@
     <ClCompile Include="src\main.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="..\routine\src\routine.c">
+    <ClCompile Include="$(RoutineDir)\routine.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="..\routine\src\rapp.c">
+    <ClCompile Include="$(RoutineDir)\rapp.c">
       <Filter>Source Files</Filter>
     </ClCompile>
   </ItemGroup>
@@ -35,22 +38,22 @@
     <ClInclude Include="src\resource.h">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="..\routine\src\rconfig.h">
+    <ClInclude Include="$(RoutineDir)\rconfig.h">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="..\routine\src\routine.h">
+    <ClInclude Include="$(RoutineDir)\routine.h">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="..\routine\src\rtypes.h">
+    <ClInclude Include="$(RoutineDir)\rtypes.h">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="..\routine\src\ntapi.h">
+    <ClInclude Include="$(RoutineDir)\ntapi.h">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="..\routine\src\ntrtl.h">
+    <ClInclude Include="$(RoutineDir)\ntrtl.h">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="..\routine\src\rapp.h">
+    <ClInclude Include="$(RoutineDir)\rapp.h">
       <Filter>Header Files</Filter>
     </ClInclude>
   </ItemGroup>

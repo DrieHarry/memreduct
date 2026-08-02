@@ -8,6 +8,28 @@
 
 #include "resource.h"
 
+// Compatibility with the public routine revision pinned by the cloud build.
+#if defined(APP_ROUTINE_LEGACY_API)
+#define _r_button_ischecked _r_ctrl_isbuttonchecked
+#define _r_button_setcheck _r_ctrl_checkbutton
+#define _r_button_setmargins _r_ctrl_setbuttonmargins
+#define _r_button_setshield _r_ctrl_setbuttonshield
+#define _r_wnd_sendcommand _r_ctrl_sendcommand
+
+#define _r_config_getboolean _r_config_getboolean_ex
+#define _r_config_getfont _r_config_getfont_ex
+#define _r_config_getlong _r_config_getlong_ex
+#define _r_config_getlong64 _r_config_getlong64_ex
+#define _r_config_getstring _r_config_getstring_ex
+#define _r_config_getulong _r_config_getulong_ex
+#define _r_config_setboolean _r_config_setboolean_ex
+#define _r_config_setfont _r_config_setfont_ex
+#define _r_config_setlong _r_config_setlong_ex
+#define _r_config_setlong64 _r_config_setlong64_ex
+#define _r_config_setstring _r_config_setstring_ex
+#define _r_config_setulong _r_config_setulong_ex
+#endif // APP_ROUTINE_LEGACY_API
+
 STATIC_DATA config = {0};
 
 ULONG limits_arr[13] = {0};
@@ -145,6 +167,20 @@ ULONG _app_getwarningvalue ()
 	return _r_calc_clamp (_r_config_getulong (L"TrayLevelWarning", DEFAULT_WARNING_LEVEL, NULL), 0, 100);
 }
 
+BOOLEAN _app_config_invertboolean (
+	_In_ LPCWSTR key_name,
+	_In_ BOOLEAN default_value,
+	_In_opt_ LPCWSTR section_name
+)
+{
+	BOOLEAN value;
+
+	value = !_r_config_getboolean (key_name, default_value, section_name);
+	_r_config_setboolean (key_name, value, section_name);
+
+	return value;
+}
+
 ULONG64 _app_getmemoryinfo (
 	_Out_ PR_MEMORY_INFO mem_info
 )
@@ -187,6 +223,71 @@ FORCEINLINE LPCWSTR _app_getcleanupreason (
 	}
 }
 
+NTSTATUS _app_getvolumemountpoints (
+	_Out_ PMOUNTMGR_MOUNT_POINTS *out_buffer,
+	_In_ HANDLE hdevice
+)
+{
+	MOUNTMGR_MOUNT_POINT query = {0};
+	PMOUNTMGR_MOUNT_POINTS mountpoints;
+	ULONG_PTR return_length;
+	ULONG buffer_length;
+	ULONG next_length;
+	NTSTATUS status;
+
+	buffer_length = sizeof (MOUNTMGR_MOUNT_POINTS) + 0x1000;
+	mountpoints = _r_mem_allocate (buffer_length);
+
+	while (TRUE)
+	{
+		RtlZeroMemory (mountpoints, buffer_length);
+		return_length = 0;
+
+		status = _r_fs_deviceiocontrol (
+			hdevice,
+			IOCTL_MOUNTMGR_QUERY_POINTS,
+			&query,
+			sizeof (MOUNTMGR_MOUNT_POINT),
+			mountpoints,
+			buffer_length,
+			&return_length
+		);
+
+		if (NT_SUCCESS (status))
+		{
+			*out_buffer = mountpoints;
+			return status;
+		}
+
+		if (status != STATUS_BUFFER_OVERFLOW && status != STATUS_BUFFER_TOO_SMALL && status != STATUS_INFO_LENGTH_MISMATCH)
+			break;
+
+		next_length = mountpoints->Size;
+
+		if (return_length > next_length && return_length <= MAXULONG)
+			next_length = (ULONG)return_length;
+
+		if (next_length <= buffer_length)
+		{
+			if (buffer_length > MAXULONG / 2)
+			{
+				status = STATUS_INSUFFICIENT_RESOURCES;
+				break;
+			}
+
+			next_length = buffer_length * 2;
+		}
+
+		buffer_length = next_length;
+		mountpoints = _r_mem_reallocate (mountpoints, buffer_length);
+	}
+
+	_r_mem_free (mountpoints);
+	*out_buffer = NULL;
+
+	return status;
+}
+
 NTSTATUS _app_flushvolumecache ()
 {
 	PMOUNTMGR_MOUNT_POINTS object_mountpoints;
@@ -218,7 +319,7 @@ NTSTATUS _app_flushvolumecache ()
 	if (!NT_SUCCESS (status))
 		return status;
 
-	status = _r_fs_getvolumemountpoints (&object_mountpoints, hdevice);
+	status = _app_getvolumemountpoints (&object_mountpoints, hdevice);
 
 	if (!NT_SUCCESS (status))
 		goto CleanupExit;
@@ -265,6 +366,138 @@ CleanupExit:
 	NtClose (hdevice);
 
 	return status;
+}
+
+BOOLEAN _app_isprocessexcluded (
+	_In_ PR_STRING exclusions,
+	_In_opt_ PR_STRING image_path,
+	_In_opt_ PUNICODE_STRING image_name
+)
+{
+	R_STRINGREF basename_part;
+	R_STRINGREF image_name_sr = {0};
+	R_STRINGREF remaining_part;
+	R_STRINGREF entry;
+	BOOLEAN has_image_name;
+	BOOLEAN has_separator;
+
+	if (_r_obj_isstringempty (exclusions))
+		return FALSE;
+
+	has_image_name = (image_name && image_name->Length && image_name->Buffer);
+
+	if (has_image_name)
+	{
+		image_name_sr.length = image_name->Length;
+		image_name_sr.buffer = image_name->Buffer;
+	}
+
+	_r_obj_initializestringref2 (&remaining_part, &exclusions->sr);
+
+	while (remaining_part.length)
+	{
+		_r_str_splitatchar (&remaining_part, L'|', &entry, &remaining_part);
+		_r_str_trimstring2 (&entry, L" \t\r\n", 0);
+
+		if (!entry.length)
+			continue;
+
+		has_separator = _r_path_getpathinfo (&entry, NULL, &basename_part);
+
+		if (image_path)
+		{
+			if (has_separator)
+			{
+				if (_r_str_isequal (&entry, &image_path->sr, TRUE))
+					return TRUE;
+			}
+			else if (has_image_name && _r_str_isequal (&entry, &image_name_sr, TRUE))
+			{
+				return TRUE;
+			}
+		}
+		else if (has_image_name)
+		{
+			if (has_separator)
+			{
+				if (_r_str_isequal (&basename_part, &image_name_sr, TRUE))
+					return TRUE;
+			}
+			else if (_r_str_isequal (&entry, &image_name_sr, TRUE))
+			{
+				return TRUE;
+			}
+		}
+	}
+
+	return FALSE;
+}
+
+NTSTATUS _app_cleanworkingsets ()
+{
+	PSYSTEM_PROCESS_INFORMATION process_list;
+	PSYSTEM_PROCESS_INFORMATION process_info;
+	PR_STRING exclusions;
+	PR_STRING image_path;
+	HANDLE hprocess;
+	NTSTATUS status;
+
+	exclusions = _r_config_getstring (L"ExcludedProcesses", NULL, NULL);
+
+	// Preserve the original fast, system-wide path when exclusions are not configured.
+	if (_r_obj_isstringempty (exclusions))
+	{
+		SYSTEM_MEMORY_LIST_COMMAND command = MemoryEmptyWorkingSets;
+
+		if (exclusions)
+			_r_obj_dereference (exclusions);
+
+		return NtSetSystemInformation (SystemMemoryListInformation, &command, sizeof (SYSTEM_MEMORY_LIST_COMMAND));
+	}
+
+	status = _r_sys_enumprocesses (&process_list);
+
+	if (!NT_SUCCESS (status))
+	{
+		_r_obj_dereference (exclusions);
+		return status;
+	}
+
+	process_info = PR_FIRST_PROCESS (process_list);
+
+	while (process_info)
+	{
+		if (process_info->UniqueProcessId && process_info->UniqueProcessId != NtCurrentProcessId ())
+		{
+			status = _r_sys_openprocess (
+				process_info->UniqueProcessId,
+				PROCESS_QUERY_INFORMATION | PROCESS_SET_QUOTA,
+				&hprocess
+			);
+
+			if (NT_SUCCESS (status))
+			{
+				image_path = NULL;
+
+				_r_sys_getprocessimagepath (hprocess, TRUE, &image_path);
+
+				if (!_app_isprocessexcluded (exclusions, image_path, &process_info->ImageName))
+					EmptyWorkingSet (hprocess);
+
+				if (image_path)
+					_r_obj_dereference (image_path);
+
+				NtClose (hprocess);
+			}
+		}
+
+		process_info = PR_NEXT_PROCESS (process_info);
+	}
+
+	_r_mem_free (process_list);
+	_r_obj_dereference (exclusions);
+
+	return STATUS_SUCCESS;
 }
 
 VOID _app_memoryclean (
@@ -389,12 +622,10 @@ VOID _app_memoryclean (
 	// Working set (vista+)
 	if ((mask & REDUCT_WORKINGSET) == REDUCT_WORKINGSET)
 	{
-		command = MemoryEmptyWorkingSets;
-
-		status = NtSetSystemInformation (SystemMemoryListInformation, &command, sizeof (SYSTEM_MEMORY_LIST_COMMAND));
+		status = _app_cleanworkingsets ();
 
 		if (!NT_SUCCESS (status))
-			_r_log (LOG_LEVEL_ERROR, NULL, L"NtSetSystemInformation", status, L"MemoryEmptyWorkingSets");
+			_r_log (LOG_LEVEL_ERROR, NULL, L"_app_cleanworkingsets", status, L"MemoryEmptyWorkingSets");
 	}
 
 	// System file cache
@@ -858,6 +1089,172 @@ FORCEINLINE VOID _app_setfontcontrol (
 	_r_ctrl_setstringformat (hwnd, IDC_FONT, L"%s, %" TEXT (PR_LONG) L"px, %" TEXT (PR_LONG), logfont->lfFaceName, _r_dc_fontheighttosize (logfont->lfHeight, dpi_value), logfont->lfWeight);
 }
 
+BOOLEAN _app_exclusions_contains (
+	_In_ HWND hwnd,
+	_In_ PR_STRINGREF path,
+	_Out_opt_ PINT item_id
+)
+{
+	PR_STRING item_path;
+	INT count;
+
+	count = _r_listview_getitemcount (hwnd, IDC_EXCLUSIONS);
+
+	for (INT i = 0; i < count; i++)
+	{
+		item_path = _r_listview_getitemtext (hwnd, IDC_EXCLUSIONS, i, 0);
+
+		if (item_path)
+		{
+			if (_r_str_isequal (&item_path->sr, path, TRUE))
+			{
+				_r_obj_dereference (item_path);
+
+				if (item_id)
+					*item_id = i;
+
+				return TRUE;
+			}
+
+			_r_obj_dereference (item_path);
+		}
+	}
+
+	return FALSE;
+}
+
+VOID _app_exclusions_load (
+	_In_ HWND hwnd
+)
+{
+	R_STRINGREF remaining_part;
+	R_STRINGREF entry;
+	PR_STRING exclusions;
+	PR_STRING path;
+	INT item_id = 0;
+
+	_r_listview_deleteallcolumns (hwnd, IDC_EXCLUSIONS);
+	_r_listview_deleteallitems (hwnd, IDC_EXCLUSIONS);
+	_r_listview_setstyle (hwnd, IDC_EXCLUSIONS, LVS_EX_DOUBLEBUFFER | LVS_EX_FULLROWSELECT | LVS_EX_INFOTIP | LVS_EX_LABELTIP, FALSE);
+	_r_listview_addcolumn (hwnd, IDC_EXCLUSIONS, 0, NULL, -100, LVCFMT_LEFT);
+
+	exclusions = _r_config_getstring (L"ExcludedProcesses", NULL, NULL);
+
+	if (!_r_obj_isstringempty (exclusions))
+	{
+		_r_obj_initializestringref2 (&remaining_part, &exclusions->sr);
+
+		while (remaining_part.length)
+		{
+			_r_str_splitatchar (&remaining_part, L'|', &entry, &remaining_part);
+			_r_str_trimstring2 (&entry, L" \t\r\n", 0);
+
+			if (!entry.length || _app_exclusions_contains (hwnd, &entry, NULL))
+				continue;
+
+			path = _r_obj_createstring2 (&entry);
+
+			_r_listview_additem (hwnd, IDC_EXCLUSIONS, item_id++, path->buffer, I_DEFAULT, I_DEFAULT, I_DEFAULT);
+
+			_r_obj_dereference (path);
+		}
+	}
+
+	if (exclusions)
+		_r_obj_dereference (exclusions);
+
+	_r_listview_setcolumn (hwnd, IDC_EXCLUSIONS, 0, NULL, -100);
+	_r_ctrl_enable (hwnd, IDC_EXCLUSIONS_REMOVE, FALSE);
+}
+
+VOID _app_exclusions_save (
+	_In_ HWND hwnd
+)
+{
+	R_STRINGBUILDER sb;
+	PR_STRING path;
+	INT count;
+
+	_r_obj_initializestringbuilder (&sb, 0x100);
+
+	count = _r_listview_getitemcount (hwnd, IDC_EXCLUSIONS);
+
+	for (INT i = 0; i < count; i++)
+	{
+		path = _r_listview_getitemtext (hwnd, IDC_EXCLUSIONS, i, 0);
+
+		if (!path)
+			continue;
+
+		if (sb.string->length)
+			_r_obj_appendstringbuilder (&sb, L"|");
+
+		_r_obj_appendstringbuilder2 (&sb, &path->sr);
+		_r_obj_dereference (path);
+	}
+
+	_r_config_setstring (L"ExcludedProcesses", sb.string->length ? sb.string->buffer : NULL, NULL);
+
+	_r_obj_deletestringbuilder (&sb);
+}
+
+VOID _app_exclusions_add (
+	_In_ HWND hwnd
+)
+{
+	R_FILE_DIALOG file_dialog = {0};
+	COMDLG_FILTERSPEC filters[] = {
+		{_r_locale_getstring (IDS_EXECUTABLE_FILES), L"*.exe"},
+	};
+	PR_STRING path = NULL;
+	HRESULT status;
+	INT item_id;
+
+	status = _r_filedialog_initialize (&file_dialog, PR_FILEDIALOG_OPENFILE);
+
+	if (FAILED (status))
+		return;
+
+	_r_filedialog_setfilter (&file_dialog, filters, RTL_NUMBER_OF (filters));
+
+	status = _r_filedialog_show (hwnd, &file_dialog);
+
+	if (SUCCEEDED (status))
+		status = _r_filedialog_getpath (&file_dialog, &path);
+
+	_r_filedialog_destroy (&file_dialog);
+
+	if (FAILED (status) || !path)
+	{
+		if (path)
+			_r_obj_dereference (path);
+
+		return;
+	}
+
+	if (_app_exclusions_contains (hwnd, &path->sr, &item_id))
+	{
+		ListView_SetItemState (GetDlgItem (hwnd, IDC_EXCLUSIONS), -1, 0, LVIS_SELECTED | LVIS_FOCUSED);
+		ListView_SetItemState (GetDlgItem (hwnd, IDC_EXCLUSIONS), item_id, LVIS_SELECTED | LVIS_FOCUSED, LVIS_SELECTED | LVIS_FOCUSED);
+		_r_listview_ensurevisible (hwnd, IDC_EXCLUSIONS, item_id);
+	}
+	else
+	{
+		item_id = _r_listview_getitemcount (hwnd, IDC_EXCLUSIONS);
+
+		_r_listview_additem (hwnd, IDC_EXCLUSIONS, item_id, path->buffer, I_DEFAULT, I_DEFAULT, I_DEFAULT);
+		_r_listview_setcolumn (hwnd, IDC_EXCLUSIONS, 0, NULL, -100);
+
+		_app_exclusions_save (hwnd);
+
+		ListView_SetItemState (GetDlgItem (hwnd, IDC_EXCLUSIONS), item_id, LVIS_SELECTED | LVIS_FOCUSED, LVIS_SELECTED | LVIS_FOCUSED);
+		_r_listview_ensurevisible (hwnd, IDC_EXCLUSIONS, item_id);
+	}
+
+	SetFocus (GetDlgItem (hwnd, IDC_EXCLUSIONS));
+	_r_obj_dereference (path);
+}
+
 INT_PTR CALLBACK SettingsProc (
 	_In_ HWND hwnd,
 	_In_ UINT msg,
@@ -974,6 +1371,13 @@ INT_PTR CALLBACK SettingsProc (
 					break;
 				}
 
+				case IDD_SETTINGS_EXCLUSIONS:
+				{
+					_app_exclusions_load (hwnd);
+
+					break;
+				}
+
 				case IDD_SETTINGS_APPEARANCE:
 				{
 					LOGFONT logfont;
@@ -1070,6 +1474,15 @@ INT_PTR CALLBACK SettingsProc (
 					_r_ctrl_setstring (hwnd, IDC_AUTOREDUCTENABLE_CHK, _r_locale_getstring (IDS_AUTOREDUCTENABLE_CHK));
 					_r_ctrl_setstring (hwnd, IDC_AUTOREDUCTINTERVALENABLE_CHK, _r_locale_getstring (IDS_AUTOREDUCTINTERVALENABLE_CHK));
 					_r_ctrl_setstring (hwnd, IDC_HOTKEY_CLEAN_CHK, _r_locale_getstring (IDS_HOTKEY_CLEAN_CHK));
+
+					break;
+				}
+
+				case IDD_SETTINGS_EXCLUSIONS:
+				{
+					_r_ctrl_setstring (hwnd, IDC_EXCLUSIONS_INFO, _r_locale_getstring (IDS_EXCLUSIONS_INFO));
+					_r_ctrl_setstring (hwnd, IDC_EXCLUSIONS_ADD, _r_locale_getstring (IDS_EXCLUSIONS_ADD));
+					_r_ctrl_setstring (hwnd, IDC_EXCLUSIONS_REMOVE, _r_locale_getstring (IDS_EXCLUSIONS_REMOVE));
 
 					break;
 				}
@@ -1251,6 +1664,12 @@ INT_PTR CALLBACK SettingsProc (
 				{
 					LPNMLISTVIEW lpnmlv = (LPNMLISTVIEW)lparam;
 					ULONG mask, value;
+
+					if (lpnmlv->hdr.idFrom == IDC_EXCLUSIONS)
+					{
+						_r_ctrl_enable (hwnd, IDC_EXCLUSIONS_REMOVE, _r_listview_getselectedcount (hwnd, IDC_EXCLUSIONS) != 0);
+						break;
+					}
 
 					if (lpnmlv->hdr.idFrom != IDC_REGIONS)
 						break;
@@ -1562,6 +1981,25 @@ INT_PTR CALLBACK SettingsProc (
 					break;
 				}
 
+				case IDC_EXCLUSIONS_ADD:
+				{
+					_app_exclusions_add (hwnd);
+					break;
+				}
+
+				case IDC_EXCLUSIONS_REMOVE:
+				{
+					INT item_id;
+
+					while ((item_id = _r_listview_getselecteditem (hwnd, IDC_EXCLUSIONS)) != INT_ERROR)
+						_r_listview_deleteitem (hwnd, IDC_EXCLUSIONS, item_id);
+
+					_app_exclusions_save (hwnd);
+					_r_ctrl_enable (hwnd, IDC_EXCLUSIONS_REMOVE, FALSE);
+
+					break;
+				}
+
 				case IDC_TRAYUSETRANSPARENCY_CHK:
 				case IDC_TRAYSHOWBORDER_CHK:
 				case IDC_TRAYROUNDCORNERS_CHK:
@@ -1740,6 +2178,7 @@ VOID _app_initialize (
 	// settings
 	_r_settings_addpage (IDD_SETTINGS_GENERAL, IDS_SETTINGS_GENERAL);
 	_r_settings_addpage (IDD_SETTINGS_MEMORY, IDS_SETTINGS_MEMORY);
+	_r_settings_addpage (IDD_SETTINGS_EXCLUSIONS, IDS_SETTINGS_EXCLUSIONS);
 	_r_settings_addpage (IDD_SETTINGS_APPEARANCE, IDS_SETTINGS_APPEARANCE);
 	_r_settings_addpage (IDD_SETTINGS_TRAY, IDS_SETTINGS_TRAY);
 	_r_settings_addpage (IDD_SETTINGS_ADVANCED, IDS_TITLE_ADVANCED);
@@ -1760,7 +2199,7 @@ INT_PTR CALLBACK DlgProc (
 
 			_app_initialize (hwnd);
 
-			_r_sys_settimer (hwnd, UID, TIMER, &_app_timercallback);
+			SetTimer (hwnd, UID, TIMER, &_app_timercallback);
 
 			break;
 		}
@@ -2239,7 +2678,7 @@ INT_PTR CALLBACK DlgProc (
 			{
 				case IDM_ALWAYSONTOP_CHK:
 				{
-					BOOLEAN new_val = _r_config_invertboolean (L"AlwaysOnTop", FALSE, NULL);
+					BOOLEAN new_val = _app_config_invertboolean (L"AlwaysOnTop", FALSE, NULL);
 
 					_r_menu_checkitem (GetMenu (hwnd), ctrl_id, 0, MF_BYCOMMAND, new_val);
 
@@ -2250,7 +2689,7 @@ INT_PTR CALLBACK DlgProc (
 
 				case IDM_STARTMINIMIZED_CHK:
 				{
-					BOOLEAN new_val = _r_config_invertboolean (L"IsStartMinimized", FALSE, NULL);
+					BOOLEAN new_val = _app_config_invertboolean (L"IsStartMinimized", FALSE, NULL);
 
 					_r_menu_checkitem (GetMenu (hwnd), ctrl_id, 0, MF_BYCOMMAND, new_val);
 
@@ -2259,7 +2698,7 @@ INT_PTR CALLBACK DlgProc (
 
 				case IDM_REDUCTCONFIRMATION_CHK:
 				{
-					BOOLEAN new_val = _r_config_invertboolean (L"IsShowReductConfirmation", TRUE, NULL);
+					BOOLEAN new_val = _app_config_invertboolean (L"IsShowReductConfirmation", TRUE, NULL);
 
 					_r_menu_checkitem (GetMenu (hwnd), ctrl_id, 0, MF_BYCOMMAND, new_val);
 
@@ -2452,13 +2891,13 @@ INT_PTR CALLBACK DlgProc (
 
 				case IDM_TRAY_DISABLE_1:
 				{
-					_r_config_invertboolean (L"AutoreductEnable", FALSE, NULL);
+					_app_config_invertboolean (L"AutoreductEnable", FALSE, NULL);
 					break;
 				}
 
 				case IDM_TRAY_DISABLE_2:
 				{
-					_r_config_invertboolean (L"AutoreductIntervalEnable", FALSE, NULL);
+					_app_config_invertboolean (L"AutoreductIntervalEnable", FALSE, NULL);
 					break;
 				}
 

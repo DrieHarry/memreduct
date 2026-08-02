@@ -26,6 +26,21 @@ You can download either the installer or portable version. For correct working y
 To activate portable mode, create "memreduct.ini" in application folder, or move it from "%APPDATA%\Henry++\Mem Reduct".
 ```
 
+### Exclusions:
+Applications can be excluded in **Settings → Exclusions → Add executable**. An excluded application keeps its working set when memory is cleaned manually, automatically, from the tray, by hotkey, or from the command line.
+
+Exclusions apply only to the **Working set** cleanup region. System file cache, standby lists, modified page lists, registry cache, and combined memory lists are system-wide Windows operations and cannot exclude individual applications.
+
+### GitHub Actions builds:
+The [Build and release workflow](.github/workflows/build.yml) builds portable x64 and ARM64 packages:
+
+- pushes to `master`, pull requests, and manual workflow runs create downloadable workflow artifacts;
+- pushing a version tag such as `v3.5.3` or `v.3.5.3` also creates a GitHub Release with both packages and SHA-256 checksums.
+
+The version in the tag must match `APP_VERSION` in `src/app.h`. Cloud-built binaries are not GPG-signed.
+
+The workflow pins the public `henrypp/routine` dependency. To use that same dependency in a local MSBuild invocation, set `RoutineDir` to its `src` directory and set `RoutineLegacyApi=true`.
+
 ### System requirements:
 - Windows 7, 8, 8.1, 10, 11 64-bit/ARM64
 - An SSE2-capable CPU
@@ -38,7 +53,7 @@ To activate portable mode, create "memreduct.ini" in application folder, or move
 - [Paypal](https://paypal.me/henrypp) (USD)
 
 ### GPG Signature:
-Binaries have GPG signature `memreduct.exe.sig` in application folder.
+Official upstream binaries have a GPG signature named `memreduct.exe.sig` in the application folder. Cloud-built binaries from this fork are unsigned.
 
 - Public key: [pubkey.asc](https://raw.githubusercontent.com/henrypp/builder/master/pubkey.asc) ([pgpkeys.eu](https://pgpkeys.eu/pks/lookup?op=index&fingerprint=on&search=0x5635B5FD))
 - Key ID: 0x5635B5FD

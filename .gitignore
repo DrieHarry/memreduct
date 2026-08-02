@@ -2,6 +2,8 @@
 .vscode/
 temp/
 packages/
+.deps/
+dist/
 bin/32/
 bin/64/
 bin/arm64/

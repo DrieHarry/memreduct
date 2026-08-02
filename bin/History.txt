@@ -1,3 +1,7 @@
+Unreleased
+- added per-application working set exclusions (issue #289)
+- added GitHub Actions x64/ARM64 builds and tagged releases
+
 v3.5.2 (1 April 2025)
 - added modified file cache clean
 - fixed pagefile displays wrong information (issue #262)
