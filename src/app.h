@@ -9,3 +9,6 @@
 #define APP_VERSION_RES 3,5,3,0
 #define APP_AUTHOR L"Henry++"
 #define APP_COPYRIGHT L"(c) 2011-2026 " APP_AUTHOR L". All Rights Reversed."
+
+#define APP_FORK_REPOSITORY_URL L"https://github.com/DrieHarry/memreduct"
+#define APP_FORK_RELEASES_URL APP_FORK_REPOSITORY_URL L"/releases"

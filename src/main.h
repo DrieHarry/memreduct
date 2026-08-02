@@ -13,6 +13,7 @@ DEFINE_GUID (GUID_TrayIcon, 0xAE9053F0, 0x8D59, 0x4803, 0x9A, 0xBB, 0x74, 0xAF, 
 
 #define TIMER 1000
 #define UID 1337
+#define TRAY_RETRY_INTERVAL 5000
 
 #define LANG_SUBMENU 1
 #define LANG_MENU 4
@@ -69,8 +70,19 @@ typedef struct _STATIC_DATA
 	HBITMAP hbitmap_mask;
 	HFONT hfont;
 	RECT icon_size;
+	ULONGLONG tray_retry_tick;
 	ULONG ms_prev;
+	BOOLEAN is_tray_available;
+	BOOLEAN is_tray_guid;
 } STATIC_DATA, *PSTATIC_DATA;
+
+typedef struct _WORKINGSET_CLEANUP_RESULT
+{
+	ULONG cleaned_count;
+	ULONG excluded_count;
+	ULONG failed_count;
+	BOOLEAN is_per_process;
+} WORKINGSET_CLEANUP_RESULT, *PWORKINGSET_CLEANUP_RESULT;
 
 typedef enum _CLEANUP_SOURCE_ENUM
 {

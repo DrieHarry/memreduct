@@ -31,6 +31,8 @@ Applications can be excluded in **Settings → Exclusions → Add executable**. 
 
 Exclusions apply only to the **Working set** cleanup region. System file cache, standby lists, modified page lists, registry cache, and combined memory lists are system-wide Windows operations and cannot exclude individual applications.
 
+Executable paths are resolved to their canonical Windows path before matching. When exclusions are active, the cleanup result also reports how many process working sets were cleaned, excluded, or skipped because Windows did not allow access.
+
 ### GitHub Actions builds:
 The [Build and release workflow](.github/workflows/build.yml) builds portable x64 and ARM64 packages:
 
@@ -40,6 +42,8 @@ The [Build and release workflow](.github/workflows/build.yml) builds portable x6
 The version in the tag must match `APP_VERSION` in `src/app.h`. Cloud-built binaries are not GPG-signed.
 
 The workflow pins the public `henrypp/routine` dependency. To use that same dependency in a local MSBuild invocation, set `RoutineDir` to its `src` directory and set `RoutineLegacyApi=true`.
+
+Automatic in-app installation is disabled in this fork so it cannot replace a fork build with an upstream binary. **Help → Check for updates** opens this fork's GitHub Releases page instead.
 
 ### System requirements:
 - Windows 7, 8, 8.1, 10, 11 64-bit/ARM64

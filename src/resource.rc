@@ -356,6 +356,7 @@ STRINGTABLE
 	IDS_EXCLUSIONS_ADD "Add executable..."
 	IDS_EXCLUSIONS_REMOVE "Remove"
 	IDS_EXECUTABLE_FILES "Executable files"
+	IDS_STATUS_EXCLUSIONS_RESULT "Working sets: %lu cleaned, %lu excluded, %lu skipped."
 }
 
 //

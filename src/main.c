@@ -113,7 +113,169 @@ FORCEINLINE BOOLEAN _app_obj_enumhashtable (
 #endif // APP_ROUTINE_LEGACY_API
 }
 
-FORCEINLINE BOOLEAN _app_tray_popup (
+FORCEINLINE VOID _app_tray_initialize (
+	_Out_ PNOTIFYICONDATA nid,
+	_In_ HWND hwnd,
+	_In_ LPCGUID guid,
+	_In_opt_ UINT msg,
+	_In_ BOOLEAN is_guid
+)
+{
+	RtlSecureZeroMemory (nid, sizeof (NOTIFYICONDATA));
+
+	nid->cbSize = sizeof (NOTIFYICONDATA);
+	nid->hWnd = hwnd;
+
+	if (is_guid)
+	{
+		nid->uFlags = NIF_GUID;
+		RtlCopyMemory (&nid->guidItem, guid, sizeof (GUID));
+	}
+	else
+	{
+		nid->uID = UID;
+	}
+
+	if (msg)
+	{
+		nid->uFlags |= NIF_MESSAGE;
+		nid->uCallbackMessage = msg;
+	}
+}
+
+BOOLEAN _app_tray_add (
+	_In_ HWND hwnd,
+	_In_ LPCGUID guid,
+	_In_ UINT msg,
+	_In_opt_ HICON hicon,
+	_In_opt_ LPCWSTR tooltip,
+	_In_ BOOLEAN is_guid
+)
+{
+	NOTIFYICONDATA nid;
+
+	_app_tray_initialize (&nid, hwnd, guid, msg, is_guid);
+
+	nid.uFlags |= NIF_ICON;
+	nid.hIcon = hicon ? hicon : LoadIconW (NULL, IDI_APPLICATION);
+
+	if (tooltip)
+	{
+		nid.uFlags |= NIF_TIP | NIF_SHOWTIP;
+		_r_str_copy (nid.szTip, RTL_NUMBER_OF (nid.szTip), tooltip);
+	}
+
+	if (!Shell_NotifyIconW (NIM_ADD, &nid))
+		return FALSE;
+
+	nid.uVersion = NOTIFYICON_VERSION_4;
+	Shell_NotifyIconW (NIM_SETVERSION, &nid);
+
+	return TRUE;
+}
+
+BOOLEAN _app_tray_create (
+	_In_ HWND hwnd,
+	_In_ LPCGUID guid,
+	_In_ UINT msg,
+	_In_opt_ HICON hicon,
+	_In_opt_ LPCWSTR tooltip
+)
+{
+	NOTIFYICONDATA nid;
+
+	// Clean up either identifier form before adding a new icon.
+	_app_tray_initialize (&nid, hwnd, guid, 0, TRUE);
+	Shell_NotifyIconW (NIM_DELETE, &nid);
+
+	_app_tray_initialize (&nid, hwnd, guid, 0, FALSE);
+	Shell_NotifyIconW (NIM_DELETE, &nid);
+
+	config.is_tray_available = FALSE;
+	config.is_tray_guid = TRUE;
+
+	if (_app_tray_add (hwnd, guid, msg, hicon, tooltip, TRUE))
+	{
+		config.is_tray_available = TRUE;
+	}
+	else if (_app_tray_add (hwnd, guid, msg, hicon, tooltip, FALSE))
+	{
+		config.is_tray_available = TRUE;
+		config.is_tray_guid = FALSE;
+	}
+
+	if (config.is_tray_available)
+		config.tray_retry_tick = 0;
+
+	return config.is_tray_available;
+}
+
+VOID _app_tray_destroy (
+	_In_ HWND hwnd,
+	_In_ LPCGUID guid
+)
+{
+	NOTIFYICONDATA nid;
+
+	_app_tray_initialize (&nid, hwnd, guid, 0, TRUE);
+	Shell_NotifyIconW (NIM_DELETE, &nid);
+
+	_app_tray_initialize (&nid, hwnd, guid, 0, FALSE);
+	Shell_NotifyIconW (NIM_DELETE, &nid);
+
+	config.is_tray_available = FALSE;
+}
+
+VOID _app_tray_setunavailable (
+	_In_opt_ HWND hwnd,
+	_In_ BOOLEAN is_ensure_visible
+)
+{
+	config.is_tray_available = FALSE;
+	config.tray_retry_tick = 0;
+
+	if (is_ensure_visible && hwnd && !_r_wnd_isvisible (hwnd, FALSE))
+	{
+		ShowWindow (hwnd, SW_SHOWNORMAL);
+		SetForegroundWindow (hwnd);
+	}
+}
+
+BOOLEAN _app_tray_setinfo (
+	_In_ HWND hwnd,
+	_In_ LPCGUID guid,
+	_In_opt_ HICON hicon,
+	_In_opt_ LPCWSTR tooltip
+)
+{
+	NOTIFYICONDATA nid;
+
+	if (!config.is_tray_available)
+		return FALSE;
+
+	_app_tray_initialize (&nid, hwnd, guid, 0, config.is_tray_guid);
+
+	if (hicon)
+	{
+		nid.uFlags |= NIF_ICON;
+		nid.hIcon = hicon;
+	}
+
+	if (tooltip)
+	{
+		nid.uFlags |= NIF_TIP | NIF_SHOWTIP;
+		_r_str_copy (nid.szTip, RTL_NUMBER_OF (nid.szTip), tooltip);
+	}
+
+	if (Shell_NotifyIconW (NIM_MODIFY, &nid))
+		return TRUE;
+
+	_app_tray_setunavailable (hwnd, TRUE);
+
+	return FALSE;
+}
+
+BOOLEAN _app_tray_popup (
 	_In_ HWND hwnd,
 	_In_ LPCGUID guid,
 	_In_opt_ ULONG flags,
@@ -121,13 +283,28 @@ FORCEINLINE BOOLEAN _app_tray_popup (
 	_In_opt_ LPCWSTR string
 )
 {
-#if defined(APP_ROUTINE_LEGACY_API)
-	_r_tray_popup (hwnd, guid, flags, title, string);
+	NOTIFYICONDATA nid;
 
-	return TRUE;
-#else
-	return _r_tray_popup (hwnd, guid, flags, title, string);
-#endif // APP_ROUTINE_LEGACY_API
+	if (!config.is_tray_available)
+		return FALSE;
+
+	_app_tray_initialize (&nid, hwnd, guid, 0, config.is_tray_guid);
+
+	nid.uFlags |= NIF_INFO | NIF_REALTIME;
+	nid.dwInfoFlags = flags;
+
+	if (title)
+		_r_str_copy (nid.szInfoTitle, RTL_NUMBER_OF (nid.szInfoTitle), title);
+
+	if (string)
+		_r_str_copy (nid.szInfo, RTL_NUMBER_OF (nid.szInfo), string);
+
+	if (Shell_NotifyIconW (NIM_MODIFY, &nid))
+		return TRUE;
+
+	_app_tray_setunavailable (hwnd, TRUE);
+
+	return FALSE;
 }
 
 FORCEINLINE NTSTATUS _app_setprocessprivilege (
@@ -165,6 +342,32 @@ FORCEINLINE NTSTATUS _app_createprocess (
 #else
 	return _r_sys_createprocess (file_name, NULL, NULL, is_wait);
 #endif // APP_ROUTINE_LEGACY_API
+}
+
+LRESULT CALLBACK _app_trayguardsubclass (
+	_In_ HWND hwnd,
+	_In_ UINT msg,
+	_In_ WPARAM wparam,
+	_In_ LPARAM lparam,
+	_In_ UINT_PTR subclass_id,
+	_In_ DWORD_PTR data
+)
+{
+	UNREFERENCED_PARAMETER (data);
+
+	if (msg == WM_SIZE && wparam == SIZE_MINIMIZED && !config.is_tray_available)
+		return 0;
+
+	if (msg == WM_SYSCOMMAND && (wparam & 0xFFF0) == SC_CLOSE && !config.is_tray_available)
+	{
+		DestroyWindow (hwnd);
+		return 0;
+	}
+
+	if (msg == WM_NCDESTROY)
+		RemoveWindowSubclass (hwnd, &_app_trayguardsubclass, subclass_id);
+
+	return DefSubclassProc (hwnd, msg, wparam, lparam);
 }
 
 INT WINAPIV compare_numbers (
@@ -500,6 +703,125 @@ CleanupExit:
 	return status;
 }
 
+PR_STRING _app_normalizepath (
+	_In_ PR_STRINGREF path
+)
+{
+	R_STRINGREF prefix_sr = PR_STRINGREF_INIT (L"\\\\");
+	R_STRINGREF path_sr;
+	PR_STRING normalized_path = NULL;
+	PR_STRING input_path;
+	PR_STRING output_path;
+	HANDLE hfile;
+	ULONG length;
+	ULONG return_length;
+
+	input_path = _r_obj_createstring2 (path);
+	_r_str_replacechar (&input_path->sr, L'/', L'\\');
+
+	hfile = CreateFileW (
+		input_path->buffer,
+		FILE_READ_ATTRIBUTES,
+		FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+		NULL,
+		OPEN_EXISTING,
+		FILE_ATTRIBUTE_NORMAL,
+		NULL
+	);
+
+	if (hfile != INVALID_HANDLE_VALUE)
+	{
+		length = GetFinalPathNameByHandleW (hfile, NULL, 0, FILE_NAME_NORMALIZED | VOLUME_NAME_DOS);
+
+		if (length)
+		{
+			output_path = _r_obj_createstring_ex (NULL, length * sizeof (WCHAR));
+			return_length = GetFinalPathNameByHandleW (hfile, output_path->buffer, length + 1, FILE_NAME_NORMALIZED | VOLUME_NAME_DOS);
+
+			if (return_length && return_length <= length)
+			{
+				output_path->length = return_length * sizeof (WCHAR);
+				output_path->buffer[return_length] = UNICODE_NULL;
+				normalized_path = output_path;
+			}
+			else
+			{
+				_r_obj_dereference (output_path);
+			}
+		}
+
+		CloseHandle (hfile);
+	}
+
+	if (!normalized_path)
+		normalized_path = _r_obj_reference (input_path);
+
+	_r_obj_dereference (input_path);
+
+	if (_r_str_isstartswith2 (&normalized_path->sr, L"\\\\?\\UNC\\", TRUE))
+	{
+		_r_obj_initializestringref_ex (
+			&path_sr,
+			PTR_ADD_OFFSET (normalized_path->buffer, 8 * sizeof (WCHAR)),
+			normalized_path->length - 8 * sizeof (WCHAR)
+		);
+
+		output_path = _r_obj_concatstringrefs (2, &prefix_sr, &path_sr);
+		_r_obj_dereference (normalized_path);
+		normalized_path = output_path;
+	}
+	else if (_r_str_isstartswith2 (&normalized_path->sr, L"\\\\?\\", TRUE))
+	{
+		_r_obj_initializestringref_ex (
+			&path_sr,
+			PTR_ADD_OFFSET (normalized_path->buffer, 4 * sizeof (WCHAR)),
+			normalized_path->length - 4 * sizeof (WCHAR)
+		);
+
+		output_path = _r_obj_createstring2 (&path_sr);
+		_r_obj_dereference (normalized_path);
+		normalized_path = output_path;
+	}
+
+	return normalized_path;
+}
+
+PR_STRING _app_normalizeexclusions (
+	_In_ PR_STRING exclusions
+)
+{
+	R_STRINGBUILDER sb;
+	R_STRINGREF basename_part;
+	R_STRINGREF remaining_part;
+	R_STRINGREF entry;
+	PR_STRING normalized_path;
+
+	_r_obj_initializestringbuilder (&sb, exclusions->length + 0x40);
+	_r_obj_initializestringref2 (&remaining_part, &exclusions->sr);
+
+	while (remaining_part.length)
+	{
+		_r_str_splitatchar (&remaining_part, L'|', &entry, &remaining_part);
+		_r_str_trimstring2 (&entry, L" \t\r\n", 0);
+
+		if (!entry.length)
+			continue;
+
+		if (_r_path_getpathinfo (&entry, NULL, &basename_part))
+			normalized_path = _app_normalizepath (&entry);
+		else
+			normalized_path = _r_obj_createstring2 (&entry);
+
+		if (sb.string->length)
+			_r_obj_appendstringbuilder (&sb, L"|");
+
+		_r_obj_appendstringbuilder2 (&sb, &normalized_path->sr);
+		_r_obj_dereference (normalized_path);
+	}
+
+	return _r_obj_finalstringbuilder (&sb);
+}
+
 BOOLEAN _app_isprocessexcluded (
 	_In_ PR_STRING exclusions,
 	_In_opt_ PR_STRING image_path,
@@ -565,14 +887,21 @@ BOOLEAN _app_isprocessexcluded (
 	return FALSE;
 }
 
-NTSTATUS _app_cleanworkingsets ()
+NTSTATUS _app_cleanworkingsets (
+	_Out_ PWORKINGSET_CLEANUP_RESULT result
+)
 {
 	PSYSTEM_PROCESS_INFORMATION process_list;
 	PSYSTEM_PROCESS_INFORMATION process_info;
+	PR_STRING normalized_exclusions;
+	PR_STRING normalized_image_path;
 	PR_STRING exclusions;
 	PR_STRING image_path;
 	HANDLE hprocess;
+	NTSTATUS first_failure = STATUS_SUCCESS;
 	NTSTATUS status;
+
+	RtlSecureZeroMemory (result, sizeof (WORKINGSET_CLEANUP_RESULT));
 
 	exclusions = _r_config_getstring (L"ExcludedProcesses", NULL, NULL);
 
@@ -587,10 +916,27 @@ NTSTATUS _app_cleanworkingsets ()
 		return NtSetSystemInformation (SystemMemoryListInformation, &command, sizeof (SYSTEM_MEMORY_LIST_COMMAND));
 	}
 
+	normalized_exclusions = _app_normalizeexclusions (exclusions);
+
+	_r_obj_dereference (exclusions);
+	exclusions = normalized_exclusions;
+
+	if (_r_obj_isstringempty (exclusions))
+	{
+		SYSTEM_MEMORY_LIST_COMMAND command = MemoryEmptyWorkingSets;
+
+		_r_obj_dereference (exclusions);
+
+		return NtSetSystemInformation (SystemMemoryListInformation, &command, sizeof (SYSTEM_MEMORY_LIST_COMMAND));
+	}
+
+	result->is_per_process = TRUE;
+
 	status = _r_sys_enumprocesses (&process_list);
 
 	if (!NT_SUCCESS (status))
 	{
+		result->failed_count = 1;
 		_r_obj_dereference (exclusions);
 		return status;
 	}
@@ -599,27 +945,63 @@ NTSTATUS _app_cleanworkingsets ()
 
 	while (process_info)
 	{
-		if (process_info->UniqueProcessId && process_info->UniqueProcessId != NtCurrentProcessId ())
+		if (process_info->UniqueProcessId)
 		{
 			status = _r_sys_openprocess (
 				process_info->UniqueProcessId,
-				PROCESS_QUERY_INFORMATION | PROCESS_SET_QUOTA,
+				PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SET_QUOTA,
 				&hprocess
 			);
 
 			if (NT_SUCCESS (status))
 			{
 				image_path = NULL;
+				normalized_image_path = NULL;
 
 				_r_sys_getprocessimagepath (hprocess, TRUE, &image_path);
 
-				if (!_app_isprocessexcluded (exclusions, image_path, &process_info->ImageName))
-					EmptyWorkingSet (hprocess);
+				if (image_path)
+					normalized_image_path = _app_normalizepath (&image_path->sr);
+
+				if (_app_isprocessexcluded (exclusions, normalized_image_path, &process_info->ImageName))
+				{
+					result->excluded_count += 1;
+				}
+				else if (EmptyWorkingSet (hprocess))
+				{
+					result->cleaned_count += 1;
+				}
+				else
+				{
+					status = _r_sys_doserrortontstatus (NtLastError ());
+
+					if (NT_SUCCESS (status))
+						status = STATUS_UNSUCCESSFUL;
+
+					result->failed_count += 1;
+
+					if (NT_SUCCESS (first_failure))
+						first_failure = status;
+				}
+
+				if (normalized_image_path)
+					_r_obj_dereference (normalized_image_path);
 
 				if (image_path)
 					_r_obj_dereference (image_path);
 
 				NtClose (hprocess);
+			}
+			else if (_app_isprocessexcluded (exclusions, NULL, &process_info->ImageName))
+			{
+				result->excluded_count += 1;
+			}
+			else
+			{
+				result->failed_count += 1;
+
+				if (NT_SUCCESS (first_failure))
+					first_failure = status;
 			}
 		}
 
@@ -628,6 +1010,23 @@ NTSTATUS _app_cleanworkingsets ()
 
 	_r_mem_free (process_list);
 	_r_obj_dereference (exclusions);
+
+	if (result->failed_count)
+	{
+		_r_log_v (
+			LOG_LEVEL_WARNING,
+			NULL,
+			L"_app_cleanworkingsets",
+			first_failure,
+			L"%lu cleaned, %lu excluded, %lu skipped",
+			result->cleaned_count,
+			result->excluded_count,
+			result->failed_count
+		);
+	}
+
+	if (!result->cleaned_count && result->failed_count)
+		return first_failure;
 
 	return STATUS_SUCCESS;
 }
@@ -642,7 +1041,8 @@ VOID _app_memoryclean (
 	SYSTEM_FILECACHE_INFORMATION sfci = {0};
 	SYSTEM_MEMORY_LIST_COMMAND command;
 	R_MEMORY_INFO mem_info;
-	WCHAR buffer1[0x100] = {0}, buffer2[0x100] = {0}, buffer3[0x100] = {0};
+	WORKINGSET_CLEANUP_RESULT workingset_result = {0};
+	WCHAR buffer1[0x100] = {0}, buffer2[0x100] = {0}, buffer3[0x200] = {0};
 	ULONG64 reduct_after, reduct_before;
 	ULONG flags = NIIF_WARNING;
 	NTSTATUS status;
@@ -667,7 +1067,10 @@ VOID _app_memoryclean (
 			else
 			{
 				if (hwnd)
-					_r_tray_popup (hwnd, &GUID_TrayIcon, flags, _r_app_getname (), _r_locale_getstring (IDS_STATUS_NOPRIVILEGES));
+				{
+					if (!_app_tray_popup (hwnd, &GUID_TrayIcon, flags, _r_app_getname (), _r_locale_getstring (IDS_STATUS_NOPRIVILEGES)))
+						_r_show_message (hwnd, MB_OK | MB_ICONSTOP, NULL, _r_locale_getstring (IDS_STATUS_NOPRIVILEGES));
+				}
 			}
 		}
 
@@ -754,7 +1157,7 @@ VOID _app_memoryclean (
 	// Working set (vista+)
 	if ((mask & REDUCT_WORKINGSET) == REDUCT_WORKINGSET)
 	{
-		status = _app_cleanworkingsets ();
+		status = _app_cleanworkingsets (&workingset_result);
 
 		if (!NT_SUCCESS (status))
 			_r_log (LOG_LEVEL_ERROR, NULL, L"_app_cleanworkingsets", status, L"MemoryEmptyWorkingSets");
@@ -847,7 +1250,20 @@ VOID _app_memoryclean (
 
 	_r_str_printf (buffer3, RTL_NUMBER_OF (buffer3), _r_locale_getstring (IDS_STATUS_CLEANED), buffer2);
 
-	_r_str_printf (buffer3, RTL_NUMBER_OF (buffer3), L"%s\r\n\r\n%s:\r\n%s", buffer3, _r_locale_getstring (IDS_TITLE_3), buffer1);
+	if (workingset_result.is_per_process)
+	{
+		_r_str_append (buffer3, RTL_NUMBER_OF (buffer3), L"\r\n");
+		_r_str_appendformat (
+			buffer3,
+			RTL_NUMBER_OF (buffer3),
+			_r_locale_getstring (IDS_STATUS_EXCLUSIONS_RESULT),
+			workingset_result.cleaned_count,
+			workingset_result.excluded_count,
+			workingset_result.failed_count
+		);
+	}
+
+	_r_str_appendformat (buffer3, RTL_NUMBER_OF (buffer3), L"\r\n\r\n%s:\r\n%s", _r_locale_getstring (IDS_TITLE_3), buffer1);
 
 	if (src == SOURCE_CMDLINE)
 	{
@@ -864,7 +1280,10 @@ VOID _app_memoryclean (
 	else
 	{
 		if (hwnd && _r_config_getboolean (L"BalloonCleanResults", TRUE, NULL))
-			_r_tray_popup (hwnd, &GUID_TrayIcon, flags, _r_app_getname (), buffer3);
+		{
+			if (!_app_tray_popup (hwnd, &GUID_TrayIcon, flags, _r_app_getname (), buffer3) && src != SOURCE_AUTO)
+				_r_show_message (hwnd, MB_OK | MB_ICONINFORMATION, NULL, buffer3);
+		}
 	}
 
 	if (_r_config_getboolean (L"LogCleanResults", FALSE, NULL))
@@ -1030,6 +1449,7 @@ VOID CALLBACK _app_timercallback (
 	R_MEMORY_INFO mem_info;
 	WCHAR buffer[0x80];
 	HICON hicon = NULL;
+	ULONGLONG tick_count;
 	LONG64 timestamp;
 	ULONG percent;
 	BOOLEAN is_clean = FALSE;
@@ -1074,10 +1494,9 @@ VOID CALLBACK _app_timercallback (
 		hicon = _app_iconcreate (config.ms_prev);
 	}
 
-	_r_tray_setinfoformat (
-		hwnd,
-		&GUID_TrayIcon,
-		hicon,
+	_r_str_printf (
+		buffer,
+		RTL_NUMBER_OF (buffer),
 		L"%s: %" TEXT (PR_DOUBLE) L"%%\r\n%s: %" TEXT (PR_DOUBLE) L"%%\r\n%s: %" TEXT (PR_DOUBLE) L"%%",
 		_r_locale_getstring (IDS_GROUP_1),
 		mem_info.physical_memory.percent_f,
@@ -1086,6 +1505,24 @@ VOID CALLBACK _app_timercallback (
 		_r_locale_getstring (IDS_GROUP_3),
 		mem_info.system_cache.percent_f
 	);
+
+	if (config.is_tray_available)
+	{
+		_app_tray_setinfo (hwnd, &GUID_TrayIcon, hicon, buffer);
+	}
+	else
+	{
+		tick_count = GetTickCount64 ();
+
+		if (!config.tray_retry_tick || tick_count >= config.tray_retry_tick)
+		{
+			if (!hicon)
+				hicon = _app_iconcreate (config.ms_prev);
+
+			if (!_app_tray_create (hwnd, &GUID_TrayIcon, RM_TRAYICON, hicon, buffer))
+				config.tray_retry_tick = tick_count + TRAY_RETRY_INTERVAL;
+		}
+	}
 
 	if (!_r_wnd_isvisible (hwnd, FALSE))
 		return;
@@ -1261,6 +1698,7 @@ VOID _app_exclusions_load (
 {
 	R_STRINGREF remaining_part;
 	R_STRINGREF entry;
+	PR_STRING normalized_exclusions;
 	PR_STRING exclusions;
 	PR_STRING path;
 	INT item_id = 0;
@@ -1274,6 +1712,10 @@ VOID _app_exclusions_load (
 
 	if (!_r_obj_isstringempty (exclusions))
 	{
+		normalized_exclusions = _app_normalizeexclusions (exclusions);
+		_r_obj_dereference (exclusions);
+		exclusions = normalized_exclusions;
+
 		_r_obj_initializestringref2 (&remaining_part, &exclusions->sr);
 
 		while (remaining_part.length)
@@ -1338,6 +1780,7 @@ VOID _app_exclusions_add (
 	COMDLG_FILTERSPEC filters[] = {
 		{_r_locale_getstring (IDS_EXECUTABLE_FILES), L"*.exe"},
 	};
+	PR_STRING normalized_path;
 	PR_STRING path = NULL;
 	HRESULT status;
 	INT item_id;
@@ -1363,6 +1806,10 @@ VOID _app_exclusions_add (
 
 		return;
 	}
+
+	normalized_path = _app_normalizepath (&path->sr);
+	_r_obj_dereference (path);
+	path = normalized_path;
 
 	if (_app_exclusions_contains (hwnd, &path->sr, &item_id))
 	{
@@ -1413,7 +1860,8 @@ INT_PTR CALLBACK SettingsProc (
 						_r_ctrl_enable (hwnd, IDC_SKIPUACWARNING_CHK, FALSE);
 
 					_r_button_setcheck (hwnd, IDC_SKIPUACWARNING_CHK, _r_skipuac_isenabled ());
-					_r_button_setcheck (hwnd, IDC_CHECKUPDATES_CHK, _r_update_isenabled (FALSE));
+					_r_button_setcheck (hwnd, IDC_CHECKUPDATES_CHK, FALSE);
+					_r_ctrl_enable (hwnd, IDC_CHECKUPDATES_CHK, FALSE);
 
 					_r_locale_enum (hwnd, IDC_LANGUAGE, 0);
 
@@ -1442,7 +1890,7 @@ INT_PTR CALLBACK SettingsProc (
 					_r_listview_additem (hwnd, IDC_REGIONS, 2, buffer, I_DEFAULT, I_DEFAULT, REDUCT_MODIFIEDLIST);
 
 					_r_str_printf (buffer, RTL_NUMBER_OF (buffer), L"%s*", _r_locale_getstring (IDS_MEMREGION_STANDBYLIST));
-					_r_listview_additem (hwnd, IDC_REGIONS, 3, _r_locale_getstring (IDS_MEMREGION_STANDBYLIST), I_DEFAULT, I_DEFAULT, REDUCT_STANDBYLIST);
+					_r_listview_additem (hwnd, IDC_REGIONS, 3, buffer, I_DEFAULT, I_DEFAULT, REDUCT_STANDBYLIST);
 
 					_r_listview_additem (hwnd, IDC_REGIONS, 4, _r_locale_getstring (IDS_MEMREGION_STANDBYLISTPRIORITY0), I_DEFAULT, I_DEFAULT, REDUCT_STANDBYPRIORITY0LIST);
 					_r_listview_additem (hwnd, IDC_REGIONS, 5, _r_locale_getstring (IDS_MEMREGION_MODIFIEDFILECACHE), I_DEFAULT, I_DEFAULT, REDUCT_MODIFIEDFILECACHE);
@@ -2034,13 +2482,9 @@ INT_PTR CALLBACK SettingsProc (
 
 				case IDC_CHECKUPDATES_CHK:
 				{
-					BOOLEAN is_enable = _r_button_ischecked (hwnd, ctrl_id);
-
-					_r_update_enable (is_enable);
-
-					is_enable = _r_update_isenabled (FALSE);
-
-					_r_menu_checkitem (GetMenu (_r_app_gethwnd ()), IDM_CHECKUPDATES_CHK, 0, MF_BYCOMMAND, is_enable);
+					_r_update_enable (FALSE);
+					_r_button_setcheck (hwnd, ctrl_id, FALSE);
+					_r_menu_checkitem (GetMenu (_r_app_gethwnd ()), IDM_CHECKUPDATES_CHK, 0, MF_BYCOMMAND, FALSE);
 
 					break;
 				}
@@ -2328,6 +2772,7 @@ INT_PTR CALLBACK DlgProc (
 		case WM_INITDIALOG:
 		{
 			_r_app_sethwnd (hwnd); // HACK!!!
+			SetWindowSubclass (hwnd, &_app_trayguardsubclass, UID, 0);
 
 			_app_initialize (hwnd);
 
@@ -2340,7 +2785,7 @@ INT_PTR CALLBACK DlgProc (
 		{
 			KillTimer (hwnd, UID);
 
-			_r_tray_destroy (hwnd, &GUID_TrayIcon);
+			_app_tray_destroy (hwnd, &GUID_TrayIcon);
 
 			PostQuitMessage (0);
 
@@ -2350,6 +2795,10 @@ INT_PTR CALLBACK DlgProc (
 		case RM_INITIALIZE:
 		{
 			HMENU hmenu;
+			BOOLEAN is_tray_created;
+
+			// Fork builds publish portable archives and must never install upstream binaries.
+			_r_update_enable (FALSE);
 
 			hmenu = GetMenu (hwnd);
 
@@ -2361,7 +2810,8 @@ INT_PTR CALLBACK DlgProc (
 				_r_menu_checkitem (hmenu, IDM_STARTMINIMIZED_CHK, 0, MF_BYCOMMAND, _r_config_getboolean (L"IsStartMinimized", FALSE, NULL));
 				_r_menu_checkitem (hmenu, IDM_REDUCTCONFIRMATION_CHK, 0, MF_BYCOMMAND, _r_config_getboolean (L"IsShowReductConfirmation", TRUE, NULL));
 				_r_menu_checkitem (hmenu, IDM_SKIPUACWARNING_CHK, 0, MF_BYCOMMAND, _r_skipuac_isenabled ());
-				_r_menu_checkitem (hmenu, IDM_CHECKUPDATES_CHK, 0, MF_BYCOMMAND, _r_update_isenabled (FALSE));
+				_r_menu_checkitem (hmenu, IDM_CHECKUPDATES_CHK, 0, MF_BYCOMMAND, FALSE);
+				_r_menu_enableitem (hmenu, IDM_CHECKUPDATES_CHK, FALSE, FALSE);
 
 				if (!_r_sys_iselevated ())
 					_r_menu_enableitem (hmenu, IDM_SKIPUACWARNING_CHK, FALSE, FALSE);
@@ -2369,7 +2819,10 @@ INT_PTR CALLBACK DlgProc (
 
 			_app_iconinit (_r_dc_gettaskbardpi ());
 
-			_r_tray_create (hwnd, &GUID_TrayIcon, RM_TRAYICON, _app_iconcreate (0), _r_app_getname (), FALSE);
+			is_tray_created = _app_tray_create (hwnd, &GUID_TrayIcon, RM_TRAYICON, _app_iconcreate (0), _r_app_getname ());
+
+			if (!is_tray_created)
+				config.tray_retry_tick = GetTickCount64 () + TRAY_RETRY_INTERVAL;
 
 			_app_iconredraw (hwnd);
 
@@ -2388,7 +2841,11 @@ INT_PTR CALLBACK DlgProc (
 		{
 			_app_iconinit (_r_dc_gettaskbardpi ());
 
-			_r_tray_create (hwnd, &GUID_TrayIcon, RM_TRAYICON, _app_iconcreate (0), _r_app_getname (), FALSE);
+			if (!_app_tray_create (hwnd, &GUID_TrayIcon, RM_TRAYICON, _app_iconcreate (0), _r_app_getname ()))
+			{
+				_app_tray_setunavailable (hwnd, TRUE);
+				config.tray_retry_tick = GetTickCount64 () + TRAY_RETRY_INTERVAL;
+			}
 
 			_app_iconredraw (hwnd);
 
@@ -2517,7 +2974,7 @@ INT_PTR CALLBACK DlgProc (
 					_r_menu_additem (hmenu, IDM_CLEAN_MODIFIEDLIST, buffer);
 
 					_r_str_printf (buffer, RTL_NUMBER_OF (buffer), L"%s*", _r_locale_getstring (IDS_MEMREGION_STANDBYLIST));
-					_r_menu_additem (hmenu, IDM_CLEAN_STANDBYLIST, _r_locale_getstring (IDS_MEMREGION_STANDBYLIST));
+					_r_menu_additem (hmenu, IDM_CLEAN_STANDBYLIST, buffer);
 
 					_r_menu_additem (hmenu, IDM_CLEAN_STANDBYLISTPRIORITY0, _r_locale_getstring (IDS_MEMREGION_STANDBYLISTPRIORITY0));
 
@@ -2865,10 +3322,8 @@ INT_PTR CALLBACK DlgProc (
 
 				case IDM_CHECKUPDATES_CHK:
 				{
-					BOOLEAN new_val = !_r_update_isenabled (FALSE);
-
-					_r_menu_checkitem (GetMenu (hwnd), ctrl_id, 0, MF_BYCOMMAND, new_val);
-					_r_update_enable (new_val);
+					_r_update_enable (FALSE);
+					_r_menu_checkitem (GetMenu (hwnd), ctrl_id, 0, MF_BYCOMMAND, FALSE);
 
 					break;
 				}
@@ -3050,7 +3505,11 @@ INT_PTR CALLBACK DlgProc (
 				case IDCANCEL: // process Esc key
 				case IDM_TRAY_SHOW:
 				{
-					_r_wnd_toggle (hwnd, FALSE);
+					if (ctrl_id == IDCANCEL && !config.is_tray_available)
+						ShowWindow (hwnd, SW_MINIMIZE);
+					else
+						_r_wnd_toggle (hwnd, FALSE);
+
 					break;
 				}
 
@@ -3080,13 +3539,13 @@ INT_PTR CALLBACK DlgProc (
 				case IDM_WEBSITE:
 				case IDM_TRAY_WEBSITE:
 				{
-					_r_shell_opendefault (_r_app_getwebsite_url ());
+					_r_shell_opendefault (APP_FORK_REPOSITORY_URL);
 					break;
 				}
 
 				case IDM_CHECKUPDATES:
 				{
-					_r_update_check (hwnd);
+					_r_shell_opendefault (APP_FORK_RELEASES_URL);
 					break;
 				}
 
@@ -3163,6 +3622,12 @@ INT APIENTRY wWinMain (
 
 	if (!hwnd)
 		return ERROR_APP_INIT_FAILURE;
+
+	if (!config.is_tray_available && !_r_wnd_isvisible (hwnd, FALSE))
+	{
+		ShowWindow (hwnd, SW_SHOWNORMAL);
+		SetForegroundWindow (hwnd);
+	}
 
 	return _r_wnd_message_callback (hwnd, MAKEINTRESOURCEW (IDA_MAIN));
 }

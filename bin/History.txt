@@ -1,6 +1,11 @@
 Unreleased
 - added per-application working set exclusions (issue #289)
 - added GitHub Actions x64/ARM64 builds and tagged releases
+- fixed tray registration failures leaving the application hidden without an icon
+- restored cleanup-result feedback for individual cleanup commands when tray notifications are unavailable
+- hardened exclusion matching with canonical paths and per-process result reporting
+- disabled upstream automatic installation in fork builds; manual checks open this fork's releases
+- fixed missing warning markers on standby-list labels
 
 v3.5.2 (1 April 2025)
 - added modified file cache clean
