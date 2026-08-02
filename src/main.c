@@ -3,6 +3,8 @@
 
 #include "routine.h"
 
+#include <mountmgr.h>
+
 #include "main.h"
 #include "rapp.h"
 
@@ -34,6 +36,82 @@ STATIC_DATA config = {0};
 
 ULONG limits_arr[13] = {0};
 ULONG intervals_arr[13] = {0};
+
+// Bridge API shape differences between the public routine SDK and newer snapshots.
+FORCEINLINE BOOLEAN _app_obj_enumhashtable (
+	_In_ PR_HASHTABLE hashtable,
+	_Out_ PULONG hash_code,
+	_Inout_ PULONG_PTR enum_key
+)
+{
+#if defined(APP_ROUTINE_LEGACY_API)
+	ULONG_PTR legacy_hash_code;
+	BOOLEAN is_success;
+
+	is_success = _r_obj_enumhashtable (hashtable, NULL, &legacy_hash_code, enum_key);
+
+	if (is_success)
+		*hash_code = (ULONG)legacy_hash_code;
+
+	return is_success;
+#else
+	return _r_obj_enumhashtable (hashtable, NULL, hash_code, enum_key);
+#endif // APP_ROUTINE_LEGACY_API
+}
+
+FORCEINLINE BOOLEAN _app_tray_popup (
+	_In_ HWND hwnd,
+	_In_ LPCGUID guid,
+	_In_opt_ ULONG flags,
+	_In_opt_ LPCWSTR title,
+	_In_opt_ LPCWSTR string
+)
+{
+#if defined(APP_ROUTINE_LEGACY_API)
+	_r_tray_popup (hwnd, guid, flags, title, string);
+
+	return TRUE;
+#else
+	return _r_tray_popup (hwnd, guid, flags, title, string);
+#endif // APP_ROUTINE_LEGACY_API
+}
+
+FORCEINLINE NTSTATUS _app_setprocessprivilege (
+	_In_opt_ HWND hwnd,
+	_In_ HANDLE process_handle,
+	_In_reads_ (count) PULONG privileges,
+	_In_ ULONG count,
+	_In_ BOOLEAN is_enable
+)
+{
+#if defined(APP_ROUTINE_LEGACY_API)
+	UNREFERENCED_PARAMETER (hwnd);
+
+	return _r_sys_setprocessprivilege (process_handle, privileges, count, is_enable);
+#else
+	return _r_sys_setprocessprivilege (hwnd, process_handle, privileges, count, is_enable);
+#endif // APP_ROUTINE_LEGACY_API
+}
+
+FORCEINLINE NTSTATUS _app_createprocess (
+	_In_ PR_STRINGREF file_name,
+	_In_ BOOLEAN is_wait
+)
+{
+#if defined(APP_ROUTINE_LEGACY_API)
+	PR_STRING file_name_string;
+	NTSTATUS status;
+
+	file_name_string = _r_obj_createstring2 (file_name);
+	status = _r_sys_createprocess (file_name_string->buffer, NULL, NULL, is_wait);
+
+	_r_obj_dereference (file_name_string);
+
+	return status;
+#else
+	return _r_sys_createprocess (file_name, NULL, NULL, is_wait);
+#endif // APP_ROUTINE_LEGACY_API
+}
 
 INT WINAPIV compare_numbers (
 	_In_opt_ PVOID context,
@@ -83,7 +161,7 @@ VOID _app_generate_array (
 
 	index = 0;
 
-	while (_r_obj_enumhashtable (hashtable, NULL, &hash_code, &enum_key))
+	while (_app_obj_enumhashtable (hashtable, &hash_code, &enum_key))
 	{
 		if (hash_code <= max_value)
 			integers[index] = hash_code;
@@ -721,7 +799,7 @@ VOID _app_memoryclean (
 	{
 		if (_r_config_getboolean (L"BalloonCleanResults", TRUE, NULL))
 		{
-			if (!_r_tray_popup (hwnd, &GUID_TrayIcon, flags, _r_app_getname (), buffer3))
+			if (!_app_tray_popup (hwnd, &GUID_TrayIcon, flags, _r_app_getname (), buffer3))
 				_r_show_message (hwnd, MB_OK | MB_ICONINFORMATION, NULL, buffer3);
 		}
 		else
@@ -2143,7 +2221,7 @@ VOID _app_initialize (
 
 	if (_r_sys_iselevated ())
 	{
-		_r_sys_setprocessprivilege (hwnd, NtCurrentProcess (), privileges, RTL_NUMBER_OF (privileges), TRUE);
+		_app_setprocessprivilege (hwnd, NtCurrentProcess (), privileges, RTL_NUMBER_OF (privileges), TRUE);
 	}
 	else
 	{
@@ -2501,7 +2579,7 @@ INT_PTR CALLBACK DlgProc (
 
 						case 2:
 						{
-							_r_sys_createprocess (&taskmgr_sr, NULL, NULL, FALSE);
+							_app_createprocess (&taskmgr_sr, FALSE);
 							break;
 						}
 
