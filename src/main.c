@@ -1,10 +1,9 @@
 // Mem Reduct
 // Copyright (c) 2011-2026 Henry++
 
+#include <limits.h>
+
 #include "routine.h"
-
-#include <winioctl.h>
-
 #include "main.h"
 #include "rapp.h"
 
@@ -397,12 +396,12 @@ NTSTATUS _app_getvolumemountpoints (
 
 		next_length = mountpoints->Size;
 
-		if (return_length > next_length && return_length <= MAXULONG)
+		if (return_length > next_length && return_length <= ULONG_MAX)
 			next_length = (ULONG)return_length;
 
 		if (next_length <= buffer_length)
 		{
-			if (buffer_length > MAXULONG / 2)
+			if (buffer_length > ULONG_MAX / 2)
 			{
 				status = STATUS_INSUFFICIENT_RESOURCES;
 				break;
